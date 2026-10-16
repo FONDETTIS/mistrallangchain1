@@ -1,0 +1,207 @@
+// =============================================================================
+// Spring AI (1.0.x) — ChatClientBuilder example
+//
+// ChatClientBuilder is the programmatic way to create a ChatClient, Spring AI's
+// high-level fluent API on top of a ChatModel. Use it when you need a custom
+// ChatClient with specific defaults (system prompt, options, advisors, etc.)
+// without replacing the auto-configured ChatModel.
+//
+// Maven — same BOM + starter as the ChatModel example.
+// =============================================================================
+
+package com.example.chatclientdemo;
+
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientBuilder;
+import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.converter.BeanOutputConverter;
+import org.springframework.ai.converter.ListOutputConverter;
+import org.springframework.ai.converter.MapOutputConverter;
+import org.springframework.ai.converter.StructuredOutputConverter;
+import org.springframework.ai.model.ModelOptionsUtils;
+import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.ollama.api.OllamaOptions;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+@SpringBootApplication
+public class ChatClientBuilderDemoApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ChatClientBuilderDemoApplication.class, args);
+    }
+
+    // -------------------------------------------------------------------------
+    // 1) Minimal builder — just a ChatModel
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient basicChatClient(ChatModel chatModel) {
+        return ChatClientBuilder.builder(chatModel).build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 2) With a default system prompt
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient systemChatClient(ChatModel chatModel) {
+        return ChatClientBuilder.builder(chatModel)
+                .defaultSystem("You are a helpful, concise assistant. Answer in French.")
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 3) With default system + default user prefix
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient prefixedChatClient(ChatModel chatModel) {
+        return ChatClientBuilder.builder(chatModel)
+                .defaultSystem("You are a senior Java engineer.")
+                .defaultUser("Please review the following code snippet:\n{code}")
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 4) With default ChatOptions (model, temperature, etc.)
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient optionsChatClient(ChatModel chatModel) {
+        return ChatClientBuilder.builder(chatModel)
+                .defaultOptions(ChatOptions.builder()
+                        .model("mistral-small-latest")
+                        .temperature(0.3)
+                        .maxTokens(500)
+                        .build())
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 5) With advisors (e.g. add chat memory, logging, or custom logic)
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient advisorChatClient(ChatModel chatModel) {
+        return ChatClientBuilder.builder(chatModel)
+                .defaultAdvisors(List.of(
+                        // Built-in advisor: QuestionAnswerAdvisor prepends
+                        // a "Question: ... Answer: " pattern to the prompt
+                        new QuestionAnswerAdvisor()))
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 6) With a custom ChatModel (e.g. Ollama local LLM)
+    // -------------------------------------------------------------------------
+    @Bean
+    ChatClient ollamaChatClient(@Value("${ollama.base-url:http://localhost:11434}") String baseUrl) {
+        OllamaChatModel ollama = new OllamaChatModel(baseUrl);
+        ollama.setOptions(OllamaOptions.builder().model("llama3.2").build());
+        return ChatClientBuilder.builder(ollama)
+                .defaultSystem("You are a local assistant running on my machine.")
+                .build();
+    }
+
+    // -------------------------------------------------------------------------
+    // 7) Full example with CommandLineRunner
+    // -------------------------------------------------------------------------
+    @Bean
+    CommandLineRunner demo(ChatClient chatClient, ChatClient prefixedChatClient,
+            ChatClient optionsChatClient, ChatClient advisorChatClient) {
+        return args -> {
+
+            // ---------------------------------------------------------------
+            // 7a) Simple prompt with the default ChatClient
+            // ---------------------------------------------------------------
+            String answer = chatClient.prompt()
+                    .user("What is the capital of France?")
+                    .call()
+                    .content();
+            System.out.println("7a) " + answer);
+
+            // ---------------------------------------------------------------
+            // 7b) Use the prefixed client (default user prefix is applied)
+            // ---------------------------------------------------------------
+            String review = prefixedChatClient.prompt()
+                    .user(u -> u.text("public class Foo { }").param("code", "public class Foo { }"))
+                    .call()
+                    .content();
+            System.out.println("7b) " + review);
+
+            // ---------------------------------------------------------------
+            // 7c) Override defaults per-call
+            // ---------------------------------------------------------------
+            String creative = optionsChatClient.prompt()
+                    .system("Be creative and poetic.") // overrides default system
+                    .user("Write a haiku about Java.")
+                    .options(ChatOptions.builder().temperature(0.9).build()) // overrides default options
+                    .call()
+                    .content();
+            System.out.println("7c) " + creative);
+
+            // ---------------------------------------------------------------
+            // 7d) Use the advisor client (QuestionAnswerAdvisor)
+            // ---------------------------------------------------------------
+            String qa = advisorChatClient.prompt()
+                    .user("What is a Java record?")
+                    .call()
+                    .content();
+            System.out.println("7d) " + qa);
+
+            // ---------------------------------------------------------------
+            // 7e) Structured output with BeanOutputConverter
+            // ---------------------------------------------------------------
+            record Weather(String city, double temperature, String description) {}
+            
+            StructuredOutputConverter<Weather> weatherConverter =
+                    new StructuredOutputConverter<>(new BeanOutputConverter<>(Weather.class));
+            
+            String weatherJson = chatClient.prompt()
+                    .user("Return the current weather in Paris as JSON.")
+                    .call()
+                    .content();
+            
+            Weather weather = weatherConverter.convert(weatherJson);
+            System.out.println("7e) " + weather);
+
+            // ---------------------------------------------------------------
+            // 7f) List output (e.g. for multiple results)
+            // ---------------------------------------------------------------
+            ListOutputConverter listConverter = new ListOutputConverter(new BeanOutputConverter<>(Film.class));
+            
+            record Film(String title, int year) {}
+            
+            String filmsJson = chatClient.prompt()
+                    .user("List 3 films by Christopher Nolan as JSON array.")
+                    .call()
+                    .content();
+            
+            List<Film> films = listConverter.convert(filmsJson);
+            System.out.println("7f) " + films);
+
+            // ---------------------------------------------------------------
+            // 7g) Map output (e.g. for dynamic key-value pairs)
+            // ---------------------------------------------------------------
+            MapOutputConverter mapConverter = new MapOutputConverter();
+            
+            String mapJson = chatClient.prompt()
+                    .user("Return a map with keys 'name', 'age', 'city' for a person.")
+                    .call()
+                    .content();
+            
+            Map<?, ?> personMap = mapConverter.convert(mapJson);
+            System.out.println("7g) " + personMap);
+        };
+    }
+}

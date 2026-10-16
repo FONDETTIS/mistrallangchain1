@@ -1,0 +1,161 @@
+// =============================================================================
+// Spring AI (1.0.x) — ChatModel example
+//
+// ChatModel is Spring AI's core abstraction over an LLM provider (Mistral,
+// OpenAI, Anthropic, Azure OpenAI, Ollama, ...). The starter you choose
+// auto-configures a ChatModel bean; you simply inject and use it.
+//
+// Maven — with the Spring AI BOM in <dependencyManagement>:
+//   <dependency>
+//     <groupId>org.springframework.ai</groupId>
+//     <artifactId>spring-ai-bom</artifactId>
+//     <version>1.0.1</version>
+//     <type>pom</type>
+//     <scope>import</scope>
+//   </dependency>
+//
+// Then pick ONE model starter, e.g. Mistral:
+//   <dependency>
+//     <groupId>org.springframework.ai</groupId>
+//     <artifactId>spring-ai-starter-model-mistral-ai</artifactId>
+//   </dependency>
+// (alternatives: spring-ai-starter-model-openai, ...-anthropic, ...-ollama, ...)
+//
+// application.yml:
+//   spring:
+//     ai:
+//       mistralai:
+//         api-key: ${MISTRAL_API_KEY}
+//         chat:
+//           options:
+//             model: mistral-small-latest
+//             temperature: 0.7
+// =============================================================================
+
+package com.example.chatmodeldemo;
+
+import java.util.List;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.model.StreamingChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.ParameterizedTypeReference;
+
+@SpringBootApplication
+public class ChatModelDemoApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ChatModelDemoApplication.class, args);
+    }
+
+    // Recommended: expose ONE tuned ChatClient bean for the whole application.
+    // ChatClient is the high-level fluent API built on top of ChatModel.
+    @Bean
+    ChatClient chatClient(ChatModel chatModel) {
+        return ChatClient.builder(chatModel)
+                .defaultSystem("You are a helpful assistant. Be concise.")
+                .build();
+    }
+
+    @Bean
+    CommandLineRunner demo(ChatModel chatModel, ChatClient chatClient) {
+        return args -> {
+
+            // ---------------------------------------------------------------
+            // 1) Simplest possible call: String in, String out
+            // ---------------------------------------------------------------
+            String joke = chatModel.call("Tell me a one-line joke about coffee.");
+            System.out.println("1) " + joke);
+
+            // ---------------------------------------------------------------
+            // 2) Message list: a SystemMessage steers the model's behaviour
+            // ---------------------------------------------------------------
+            String capital = chatModel.call(
+                    new SystemMessage("Answer in one short sentence, in French."),
+                    new UserMessage("What is the capital of Australia?"));
+            System.out.println("2) " + capital);
+
+            // ---------------------------------------------------------------
+            // 3) Prompt object + per-call options (override the defaults)
+            // ---------------------------------------------------------------
+            Prompt prompt = new Prompt(
+                    List.of(
+                            new SystemMessage("You are a senior Java reviewer."),
+                            new UserMessage("Explain Java records in 3 bullet points.")),
+                    ChatOptions.builder()
+                            .model("mistral-small-latest") // provider-specific override
+                            .temperature(0.2)
+                            .maxTokens(300)
+                            .build());
+            ChatResponse response = chatModel.call(prompt);
+            System.out.println("3) " + response.getResult().getOutput().getText());
+            // Full metadata is on the response, e.g. token usage:
+            // response.getMetadata().getUsage()
+
+            // ---------------------------------------------------------------
+            // 4) Streaming — auto-configured models also implement
+            //    StreamingChatModel, emitting chunks as they arrive
+            // ---------------------------------------------------------------
+            if (chatModel instanceof StreamingChatModel streaming) {
+                System.out.print("4) ");
+                streaming.stream(new Prompt(new UserMessage("Count from 1 to 5.")))
+                        .doOnNext(chunk -> System.out.print(
+                                chunk.getResult().getOutput().getText()))
+                        .blockLast();
+                System.out.println();
+            }
+
+            // ---------------------------------------------------------------
+            // 5) ChatClient — fluent API with templated prompts
+            // ---------------------------------------------------------------
+            String haiku = chatClient.prompt()
+                    .user(u -> u.text("Write a haiku about {topic}")
+                            .param("topic", "the Mediterranean sea"))
+                    .call()
+                    .content();
+            System.out.println("5) " + haiku);
+
+            // ---------------------------------------------------------------
+            // 6) Structured output — map the answer straight onto Java types
+            // ---------------------------------------------------------------
+            record Film(String title, int year) {}
+            List<Film> films = chatClient.prompt()
+                    .system("Reply with JSON only.")
+                    .user("List 3 films directed by Denis Villeneuve.")
+                    .call()
+                    .entity(new ParameterizedTypeReference<List<Film>>() {});
+            System.out.println("6) " + films);
+        };
+    }
+
+    // =============================================================================
+    // 7) Implementing your own ChatModel (for tests, mocks, or a custom backend)
+    //    Only call(Prompt) is mandatory; the String/Messages overloads come free.
+    // =============================================================================
+    static class EchoChatModel implements ChatModel {
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            String userText = prompt.getInstructions().stream()
+                    .filter(m -> m.getMessageType() == MessageType.USER)
+                    .map(Message::getText)
+                    .findFirst()
+                    .orElse("");
+            AssistantMessage echo = new AssistantMessage("You said: " + userText);
+            return new ChatResponse(List.of(new Generation(echo)));
+        }
+    }
+}
